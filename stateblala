@@ -1,0 +1,28 @@
+This patch introduces providers and processors as a replacement for Symfony listeners. 
+
+The idea behind that is to make API Platform work without using Symfony's [HttpKernel](https://symfony.com/doc/current/components/http_kernel.html). This means that to use API Platform, all you need to do is:
+
+```php
+$uriVariables = ['id' => 1];
+$operation = new Get(uriVariables: ['id'], resourceClass: Book::class);
+$body = $this->provider->provide($operation, $uriVariables, $context);
+return $this->processor->process($body, $operation, $uriVariables, $context);
+```
+
+This allows:
+  - to share more code between GraphQl and HTTP (very similar to #2978, we had no provider/processor at that time though) 
+  - to make the code more portable (goes in pair with our ongoing subtree split)
+  - to be able to use API Platform without the Symfony framework, it was in fact possible but a bit harder to do
+  - improve your Developer Experience **a lot**
+
+Let me explain this last part. Today API Platform relies on the [HttpKernel](https://symfony.com/doc/current/components/http_kernel.html#creating-an-event-listener) and hooks various event listeners do to work. While doing this, it alters the way Symfony itself works by adding (or mutating) [Request::$attributes](https://github.com/symfony/symfony/blob/9a0f178c5324c6ee7a3d99fe4fb7ef31b454925c/src/Symfony/Component/HttpFoundation/Request.php#L87C2-L87C2). The most notable change compared to a standard Symfony is that, when you're router goes through API Platform your controller can return `mixed` instead of a `Response`:
+
+https://github.com/api-platform/core/blob/60075501a6d15d03d4db26f00715a52cac068977/src/Action/PlaceholderAction.php#L21-L32
+
+Indeed, API Platform will intercept the `mixed` data and create the `Response` for you. This IMO is not so good especially when using API Platform programmatically.
+
+Because we rely on event listeners, we need to make choices for the framework and for example we choose to call Symfony's security before validating the user input. This lead (and still leads) to issues (#5756) as you may want stuff to be made differently. Even within Symfony, http kernel listeners priorities are NOT part of the backward compatibility layer, and therefore everyone will tell you to avoid using listeners if possible, especially avoid relying on vendor listeners.
+
+State providers and processor will help a lot with that. For example in API platform 3 we'd have: 
+
+https://github.com/api-platform/core/blob/60075501a6d15d03d4db26f00715a52cac068977/src/Symfony/Bundle/Resources/config/security.xml#L23-L28

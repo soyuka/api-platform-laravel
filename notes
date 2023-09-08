@@ -1,0 +1,9 @@
+bon j'ai plusieurs pistes, deja je vais faire un ApiController pour Laravel comme le MainController, sauf que je sais pas trop comment gérer mes providers/processors tu sais toi ? jvai surement me baser sur https://laravel.com/docs/10.x/container#zero-configuration-resolution 
+
+Ensuite j'ai deux idées plutot complémentaires:
+
+- si on a ApiResource sur un Model on peut tenter de faire: https://github.com/illuminate/database/blob/df75c0250135ef95b27bad9f0587a140cdf7bdc6/Console/ShowModelCommand.php#L120-L144 pour trouver les propriétés du modèle (requiert une connexion à la base)
+
+- si on a un ApiResource, je pensais faire un truc automatique qui créé des `Route` (https://laravel.com/docs/10.x/controllers#api-resource-routes) mais avec le controller créé pour API P.
+
+Par contre, ou faire ce truc "automatique", dans un Middleware ?
