@@ -17,7 +17,9 @@ use ApiPlatform\Util\OperationRequestInitiatorTrait;
 use App\Models\Book;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Route;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Illuminate\Database\ConnectionInterface;
 
 class ApiController extends Controller
 {
@@ -32,29 +34,242 @@ class ApiController extends Controller
     }
 
     /**
-     * Provision a new web server.
+     * Display a listing of the resource.
      */
-    public function show(Request $request)
+    public function index(Request $request)
     {
-        /** @var \Illuminate\Routing\Route */
+        /** @var Route */
         $route = $request->getRouteResolver()();
         $parameters = $route->parameters;
         $keys = array_keys($parameters);
         /** @var HttpOperation */
         $operation = $this->operationMetadataFactory->create($route->getName());
-        $operation = $operation->withUriVariables([$keys[0] => new Link(identifiers: ['id'])])
-                               // TODO: move this to a metadata factory when the model is an eloquent model
-                               ->withProvider(
-                                   fn(Operation $operation, array $uriVariables = [])
-                                    => $this->app->make($operation->getStateOptions()->model)
-                                                 ->resolveRouteBinding($uriVariables)
-                               );
+        $operation = $operation
+            // TODO: move this to a metadata factory when the model is an eloquent model
+            ->withProvider(
+                fn(Operation $operation, array $uriVariables = [])
+                => $this->app->make($operation->getStateOptions()->model)::all()
+            );
+
+        $uriVariables = [];
+        try {
+            $uriVariables = $this->getOperationUriVariables($operation, $parameters, $operation->getClass());
+        } catch (InvalidIdentifierException|InvalidUriVariableException $e) {
+            throw new NotFoundHttpException('Invalid uri variables.', $e);
+        }
+
+        $context = [
+            'request' => &$request,
+            'uri_variables' => $uriVariables,
+            'resource_class' => $operation->getClass(),
+        ];
+
+        if (null === $operation->canValidate()) {
+            $operation = $operation->withValidate(!$request->isMethodSafe() && !$request->isMethod('DELETE'));
+        }
+
+        $body = $this->provider->provide($operation, $uriVariables, $context);
+        if (null === $body) {
+            throw new NotFoundHttpException();
+        }
+        $context['previous_data'] = $request->attributes->get('previous_data');
+        $context['data'] = $request->attributes->get('data');
+
+        if (null === $operation->canWrite()) {
+            $operation = $operation->withWrite(!$request->isMethodSafe());
+        }
+
+        return $this->processor->process($body, $operation, $uriVariables, $context);
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(Request $request)
+    {
+        /** @var Route $route */
+        $route = $request->getRouteResolver()();
+        $parameters = $route->parameters;
+        $keys = array_keys($parameters);
+        /** @var HttpOperation $operation */
+        $operation = $this->operationMetadataFactory->create($route->getName());
+        $operation = $operation
+            ->withProcessor(
+                function ($data, Operation $operation, array $uriVariables = [], array $context = []) {
+                    $data = $this->app->make($operation->getStateOptions()->model)
+                        ->fill($context['request']->all())
+                    ;
+                    $data->saveOrFail();
+                    $data->refresh();
+
+                    return $data;
+                }
+            );
+
+        try {
+            $uriVariables = $this->getOperationUriVariables($operation, $parameters, $operation->getClass());
+        } catch (InvalidIdentifierException|InvalidUriVariableException $e) {
+            throw new NotFoundHttpException('Invalid uri variables.', $e);
+        }
+
+        $context = [
+            'request' => &$request,
+            'uri_variables' => $uriVariables,
+            'resource_class' => $operation->getClass(),
+        ];
+
+        if (null === $operation->canValidate()) {
+            $operation = $operation->withValidate(!$request->isMethodSafe() && !$request->isMethod('DELETE'));
+        }
+
+        $body = null;
+        $context['previous_data'] = $request->attributes->get('previous_data');
+        $context['data'] = $request->attributes->get('data');
+
+        if (null === $operation->canWrite()) {
+            $operation = $operation->withWrite(!$request->isMethodSafe());
+        }
+
+        return $this->processor->process($body, $operation, $uriVariables, $context);
+    }
+
+    /**
+     * Provision a new web server.
+     */
+    public function show(Request $request)
+    {
+        /** @var Route */
+        $route = $request->getRouteResolver()();
+        $parameters = $route->parameters;
+        $keys = array_keys($parameters);
+        /** @var HttpOperation */
+        $operation = $this->operationMetadataFactory->create($route->getName());
+        $operation = $operation
+            ->withUriVariables([$keys[0] => new Link(identifiers: ['id'])])
+            // TODO: move this to a metadata factory when the model is an eloquent model
+            ->withProvider(
+               fn(Operation $operation, array $uriVariables = [])
+                => $this->app->make($operation->getStateOptions()->model)
+                             ->resolveRouteBinding($uriVariables)
+            );
 
         // $operation = new Get(
         //     class: Book::class,
         //     name: $route->getName(),
         //     uriVariables: ,
         //     provider: ;
+
+        $uriVariables = [];
+        try {
+            $uriVariables = $this->getOperationUriVariables($operation, $parameters, $operation->getClass());
+        } catch (InvalidIdentifierException|InvalidUriVariableException $e) {
+            throw new NotFoundHttpException('Invalid uri variables.', $e);
+        }
+
+        $context = [
+            'request' => &$request,
+            'uri_variables' => $uriVariables,
+            'resource_class' => $operation->getClass(),
+        ];
+
+        if (null === $operation->canValidate()) {
+            $operation = $operation->withValidate(!$request->isMethodSafe() && !$request->isMethod('DELETE'));
+        }
+
+        $body = $this->provider->provide($operation, $uriVariables, $context);
+        if (null === $body) {
+            throw new NotFoundHttpException();
+        }
+        $context['previous_data'] = $request->attributes->get('previous_data');
+        $context['data'] = $request->attributes->get('data');
+
+        if (null === $operation->canWrite()) {
+            $operation = $operation->withWrite(!$request->isMethodSafe());
+        }
+
+        return $this->processor->process($body, $operation, $uriVariables, $context);
+    }
+
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request)
+    {
+        /** @var Route $route */
+        $route = $request->getRouteResolver()();
+        $parameters = $route->parameters;
+        $keys = array_keys($parameters);
+        /** @var HttpOperation $operation */
+        $operation = $this->operationMetadataFactory->create($route->getName());
+        $operation = $operation
+            ->withUriVariables([$keys[0] => new Link(identifiers: ['id'])])
+            // TODO: move this to a metadata factory when the model is an eloquent model
+            ->withProvider(
+                fn(Operation $operation, array $uriVariables = [])
+                => $this->app->make($operation->getStateOptions()->model)
+                    ->resolveRouteBinding($uriVariables)
+            )
+            ->withProcessor(
+                function ($data, Operation $operation, array $uriVariables = [], array $context = []) {
+                    $data->updateOrFail($context['request']->all());
+                    $data->refresh();
+
+                    return $data;
+                }
+            );
+
+        try {
+            $uriVariables = $this->getOperationUriVariables($operation, $parameters, $operation->getClass());
+        } catch (InvalidIdentifierException|InvalidUriVariableException $e) {
+            throw new NotFoundHttpException('Invalid uri variables.', $e);
+        }
+
+        $context = [
+            'request' => &$request,
+            'uri_variables' => $uriVariables,
+            'resource_class' => $operation->getClass(),
+        ];
+
+        if (null === $operation->canValidate()) {
+            $operation = $operation->withValidate(!$request->isMethodSafe() && !$request->isMethod('DELETE'));
+        }
+
+        $body = $this->provider->provide($operation, $uriVariables, $context);
+        if (null === $body) {
+            throw new NotFoundHttpException();
+        }
+        $context['previous_data'] = $request->attributes->get('previous_data');
+        $context['data'] = $request->attributes->get('data');
+
+        if (null === $operation->canWrite()) {
+            $operation = $operation->withWrite(!$request->isMethodSafe());
+        }
+
+        return $this->processor->process($body, $operation, $uriVariables, $context);
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(Request $request)
+    {
+        /** @var Route */
+        $route = $request->getRouteResolver()();
+        $parameters = $route->parameters;
+        $keys = array_keys($parameters);
+        /** @var HttpOperation */
+        $operation = $this->operationMetadataFactory->create($route->getName());
+        $operation = $operation->withUriVariables([$keys[0] => new Link(identifiers: ['id'])])
+            ->withProvider(
+                fn(Operation $operation, array $uriVariables = [])
+                => $this->app->make($operation->getStateOptions()->model)
+                    ->resolveRouteBinding($uriVariables)
+            )
+            ->withProcessor(
+                function ($data, Operation $operation) {
+                    $data->delete();
+                }
+            );
 
         $uriVariables = [];
         try {

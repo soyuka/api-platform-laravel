@@ -2,7 +2,6 @@
 
 namespace App\Providers;
 
-use ApiPlatform\Api\IdentifiersExtractor;
 use ApiPlatform\Api\IriConverterInterface;
 use ApiPlatform\Hydra\Serializer\CollectionFiltersNormalizer;
 use ApiPlatform\Hydra\Serializer\PartialCollectionViewNormalizer;
@@ -18,19 +17,21 @@ use ApiPlatform\Hydra\Serializer\ErrorNormalizer as HydraErrorNormalizer;
 use ApiPlatform\JsonLd\Serializer\ItemNormalizer as JsonLdItemNormalizer;
 use ApiPlatform\JsonLd\Serializer\ObjectNormalizer as JsonLdObjectNormalizer;
 use ApiPlatform\JsonLd\ContextBuilder as JsonLdContextBuilder;
+use ApiPlatform\Metadata\IdentifiersExtractor;
 use ApiPlatform\Metadata\Operation;
+use ApiPlatform\Metadata\Operation\PathSegmentNameGeneratorInterface;
 use ApiPlatform\Metadata\Operation\UnderscorePathSegmentNameGenerator;
 use ApiPlatform\Metadata\Property\Factory\PropertyInfoPropertyNameCollectionFactory;
 use ApiPlatform\Metadata\Property\Factory\SerializerPropertyMetadataFactory;
 use ApiPlatform\Metadata\Property\Factory\PropertyInfoPropertyMetadataFactory;
 use ApiPlatform\Metadata\Property\Factory\PropertyMetadataFactoryInterface;
 use ApiPlatform\Metadata\Property\Factory\PropertyNameCollectionFactoryInterface;
-use ApiPlatform\Api\ResourceClassResolver;
 use ApiPlatform\Metadata\Operation\Factory\OperationMetadataFactory;
 use ApiPlatform\Metadata\Operation\Factory\OperationMetadataFactoryInterface;
 use ApiPlatform\Metadata\Resource\Factory\AttributesResourceMetadataCollectionFactory;
 use ApiPlatform\Metadata\Resource\Factory\LinkFactory;
 use ApiPlatform\Metadata\Resource\Factory\AttributesResourceNameCollectionFactory;
+use ApiPlatform\Metadata\Resource\Factory\LinkFactoryInterface;
 use ApiPlatform\Metadata\Resource\Factory\PhpDocResourceMetadataCollectionFactory;
 use ApiPlatform\Metadata\Resource\Factory\InputOutputResourceMetadataCollectionFactory;
 use ApiPlatform\Metadata\Resource\Factory\FormatsResourceMetadataCollectionFactory;
@@ -42,10 +43,13 @@ use ApiPlatform\Metadata\Resource\Factory\UriTemplateResourceMetadataCollectionF
 use ApiPlatform\Metadata\Resource\Factory\OperationNameResourceMetadataCollectionFactory;
 use ApiPlatform\Metadata\Resource\Factory\AlternateUriResourceMetadataCollectionFactory;
 use ApiPlatform\Metadata\Resource\Factory\ResourceMetadataCollectionFactoryInterface;
+use ApiPlatform\Metadata\ResourceClassResolver;
+use ApiPlatform\Metadata\ResourceClassResolverInterface;
 use ApiPlatform\Problem\Serializer\ErrorNormalizer;
 use ApiPlatform\Serializer\JsonEncoder;
 use ApiPlatform\Serializer\Mapping\Factory\ClassMetadataFactory as FactoryClassMetadataFactory;
 use ApiPlatform\Serializer\SerializerContextBuilder;
+use ApiPlatform\State\CallableProcessor;
 use ApiPlatform\State\CallableProvider;
 use ApiPlatform\State\Processor\RespondProcessor;
 use ApiPlatform\State\ProcessorInterface;
@@ -54,35 +58,39 @@ use ApiPlatform\State\Provider\ContentNegotiationProvider;
 use ApiPlatform\Symfony\Messenger\Metadata\MessengerResourceMetadataCollectionFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Application;
+use Illuminate\Log\Logger;
 use Illuminate\Support\ServiceProvider;
 use Negotiation\Negotiator;
 use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PropertyAccess\PropertyAccess;
 use Symfony\Component\PropertyInfo\Extractor\PhpDocExtractor;
 use Symfony\Component\PropertyInfo\PropertyInfoExtractor;
 use Symfony\Component\PropertyInfo\Extractor\ReflectionExtractor;
+use Symfony\Component\PropertyInfo\PropertyInfoExtractorInterface;
 use Symfony\Component\Serializer\Mapping\Factory\ClassMetadataFactory;
 use Symfony\Component\Serializer\Mapping\Factory\ClassMetadataFactoryInterface;
+use Symfony\Component\Serializer\Mapping\Loader\LoaderInterface;
 use Symfony\Component\Serializer\NameConverter\MetadataAwareNameConverter;
 use Symfony\Component\Serializer\Mapping\Loader\AnnotationLoader;
 use Symfony\Component\Serializer\Normalizer\ObjectNormalizer;
 use Symfony\Component\Serializer\Serializer;
 
-class SerializeProcessor implements ProcessorInterface {
-  public function __construct(private readonly ProcessorInterface $processor)
-    {
-    }
-
-    public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = [])
-    {
-        if (!$data instanceof Model || $data instanceof Response || !($operation->canSerialize() ?? true) || !($request = $context['request'] ?? null)) {
-            return $this->processor->process($data, $operation, $uriVariables, $context);
-        }
-
-        return $this->processor->process($data->toJson(), $operation, $uriVariables, $context);
-    }
-}
+//class SerializeProcessor implements ProcessorInterface {
+//  public function __construct(private readonly ProcessorInterface $processor)
+//    {
+//    }
+//
+//    public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = [])
+//    {
+//        if (!$data instanceof Model || $data instanceof Response || !($operation->canSerialize() ?? true) || !($request = $context['request'] ?? null)) {
+//            return $this->processor->process($data, $operation, $uriVariables, $context);
+//        }
+//
+//        return $this->processor->process($data->toJson(), $operation, $uriVariables, $context);
+//    }
+//}
 
 final class FilterLocator implements ContainerInterface
 {
@@ -124,95 +132,106 @@ class ApiPlatformProvider extends ServiceProvider
             ]
         ];
 
-        // TODO
         $logger = null;
 
-        $phpDocExtractor = new PhpDocExtractor();
-        $reflectionExtractor = new ReflectionExtractor();
+        $this->app->singleton(PropertyInfoExtractorInterface::class, function (Application $app) {
+            $phpDocExtractor = new PhpDocExtractor();
+            $reflectionExtractor = new ReflectionExtractor();
 
-        $propertyInfo = new PropertyInfoExtractor(
-            [$reflectionExtractor],
-            [$phpDocExtractor, $reflectionExtractor],
-            [$phpDocExtractor],
-            [$reflectionExtractor],
-            [$reflectionExtractor]
-        );
+            return new PropertyInfoExtractor(
+                [$reflectionExtractor],
+                [$phpDocExtractor, $reflectionExtractor],
+                [$phpDocExtractor],
+                [$reflectionExtractor],
+                [$reflectionExtractor]
+            );
+        });
 
+        $this->app->bind(LoaderInterface::class, AnnotationLoader::class);
+        $this->app->bind(ClassMetadataFactoryInterface::class, ClassMetadataFactory::class);
 
-        $classMetadataFactory = new ClassMetadataFactory(new AnnotationLoader());
 
         $filterLocator = new FilterLocator();
-        $pathSegmentNameGenerator = new UnderscorePathSegmentNameGenerator();
+        $this->app->bind(PathSegmentNameGeneratorInterface::class, UnderscorePathSegmentNameGenerator::class);
 
-        $resourceNameCollectionFactory = new AttributesResourceNameCollectionFactory([app_path()]);
-        $resourceClassResolver = new ResourceClassResolver($resourceNameCollectionFactory);
-        $propertyMetadataFactory = new PropertyInfoPropertyMetadataFactory($propertyInfo);
-        $propertyMetadataFactory = new SerializerPropertyMetadataFactory(new FactoryClassMetadataFactory($classMetadataFactory), $propertyMetadataFactory, $resourceClassResolver);
+        $this->app->singleton(ResourceNameCollectionFactoryInterface::class, function (Application $app) {
+            return new AttributesResourceNameCollectionFactory([app_path()]);
+        });
 
-        $propertyNameCollectionFactory = new PropertyInfoPropertyNameCollectionFactory($propertyInfo);
-        $linkFactory = new LinkFactory(
-            $propertyNameCollectionFactory,
-            $propertyMetadataFactory,
-            $resourceClassResolver
-        );
-        $resourceMetadataFactory = new MessengerResourceMetadataCollectionFactory(
-            new AlternateUriResourceMetadataCollectionFactory(
-                new FiltersResourceMetadataCollectionFactory(
-                    new FormatsResourceMetadataCollectionFactory(
-                        new InputOutputResourceMetadataCollectionFactory(
-                            new PhpDocResourceMetadataCollectionFactory(
-                                new OperationNameResourceMetadataCollectionFactory(
-                                    new LinkResourceMetadataCollectionFactory(
-                                        $linkFactory,
-                                        new UriTemplateResourceMetadataCollectionFactory(
-                                            $linkFactory,
-                                            $pathSegmentNameGenerator,
-                                            new NotExposedOperationResourceMetadataCollectionFactory(
-                                                $linkFactory,
-                                                new AttributesResourceMetadataCollectionFactory(null, $logger, [], false)
+        $this->app->bind(ResourceClassResolverInterface::class, ResourceClassResolver::class);
+        $this->app->singleton(PropertyMetadataFactoryInterface::class, function (Application $app) {
+            return new PropertyInfoPropertyMetadataFactory(
+                $app->make(PropertyInfoExtractorInterface::class)
+            );
+        });
+        $this->app->extend(PropertyMetadataFactoryInterface::class, function (PropertyInfoPropertyMetadataFactory $inner, Application $app) {
+            return new SerializerPropertyMetadataFactory(
+                new FactoryClassMetadataFactory($app->make(ClassMetadataFactoryInterface::class)),
+                $inner,
+                $app->make(ResourceClassResolverInterface::class)
+            );
+        });
+
+        $this->app->bind(PropertyNameCollectionFactoryInterface::class, PropertyInfoPropertyNameCollectionFactory::class);
+
+        $this->app->singleton(LinkFactoryInterface::class, function (Application $app) {
+            return new LinkFactory(
+                $app->make(PropertyNameCollectionFactoryInterface::class),
+                $app->make(PropertyMetadataFactoryInterface::class),
+                $app->make(ResourceClassResolverInterface::class),
+
+            );
+        });
+
+        $this->app->singleton(ResourceMetadataCollectionFactoryInterface::class, function (Application $app) use ($logger, $formats, $patchFormats) {
+            return new MessengerResourceMetadataCollectionFactory(
+                new AlternateUriResourceMetadataCollectionFactory(
+                    new FiltersResourceMetadataCollectionFactory(
+                        new FormatsResourceMetadataCollectionFactory(
+                            new InputOutputResourceMetadataCollectionFactory(
+                                new PhpDocResourceMetadataCollectionFactory(
+                                    new OperationNameResourceMetadataCollectionFactory(
+                                        new LinkResourceMetadataCollectionFactory(
+                                            $this->app->make(LinkFactoryInterface::class),
+                                            new UriTemplateResourceMetadataCollectionFactory(
+                                                $this->app->make(LinkFactoryInterface::class),
+                                                $this->app->make(PathSegmentNameGeneratorInterface::class),
+                                                new NotExposedOperationResourceMetadataCollectionFactory(
+                                                    $this->app->make(LinkFactoryInterface::class),
+                                                    new AttributesResourceMetadataCollectionFactory(null, $logger, [], false)
+                                                )
                                             )
                                         )
                                     )
                                 )
-                            )
-                        ),
-                        $formats,
-                        $patchFormats,
+                            ),
+                            $formats,
+                            $patchFormats,
+                        )
                     )
                 )
-            )
-        );
-
-        $propertyAccessor = PropertyAccess::createPropertyAccessor();
-        $identifiersExtractor = new IdentifiersExtractor($resourceMetadataFactory, $resourceClassResolver, $propertyNameCollectionFactory, $propertyMetadataFactory, $propertyAccessor);
-
-        $this->app->instance(ResourceNameCollectionFactoryInterface::class, $resourceNameCollectionFactory);
-        $this->app->instance(ResourceMetadataCollectionFactoryInterface::class, $resourceMetadataFactory);
-
-        $operationMetadataFactory = new OperationMetadataFactory($resourceNameCollectionFactory, $resourceMetadataFactory);
-        $this->app->instance(OperationMetadataFactoryInterface::class, $operationMetadataFactory);
-
-        $this->app->bind(CallableProvider::class, function (Application $app) {
-            return new CallableProvider($app);
+            );
         });
+
+//        $propertyAccessor = PropertyAccess::createPropertyAccessor();
+//        $identifiersExtractor = new IdentifiersExtractor($resourceMetadataFactory, $resourceClassResolver, $propertyNameCollectionFactory, $propertyMetadataFactory, $propertyAccessor);
+//        $this->app->instance(IdentifiersExtractor::class, $identifiersExtractor);
+
+        $this->app->bind(OperationMetadataFactoryInterface::class, OperationMetadataFactory::class);
 
         $this->app->bind(ProviderInterface::class, CallableProvider::class);
-
-        $this->app->extend(CallableProvider::class, function (CallableProvider $inner, Application $app) {
-            return new ContentNegotiationProvider($inner, new Negotiator(), ['json' => ['application/json']]);
+        $this->app->extend(ProviderInterface::class, function (ProviderInterface $inner, Application $app) use ($formats) {
+            return new ContentNegotiationProvider($inner, new Negotiator(), $formats);
         });
 
-        $this->app->bind(RespondProcessor::class, function (Application $app) {
-            return new RespondProcessor();
-        });
+//        $this->app->singleton(RespondProcessor::class, function (Application $app) {
+//            return new RespondProcessor();
+//        });
+//        $this->app->extend(RespondProcessor::class, function (RespondProcessor $inner, Application $app) {
+//            return new SerializeProcessor($inner);
+//        });
 
-        // $this->app->instance(Serializer::class, new Serializer([new ObjectNormalizer()], [new JsonEncoder('json')]));
-        // $this->app->bind(SerializerContextBuilderInterface::class, SerializerContextBuilder::class);
-        $this->app->extend(RespondProcessor::class, function (RespondProcessor $inner, Application $app) {
-            return new SerializeProcessor($inner);
-        });
-
-        $this->app->bind(ProcessorInterface::class, RespondProcessor::class);
+        $this->app->bind(ProcessorInterface::class, CallableProcessor::class);
     }
 
     /**
